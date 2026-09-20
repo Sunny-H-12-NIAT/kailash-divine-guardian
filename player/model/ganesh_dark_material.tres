@@ -1,0 +1,8 @@
+[gd_resource type="StandardMaterial3D" load_steps=2 format=3 uid="uid://b2d8kq7m1f3ny"]
+
+[ext_resource type="Texture2D" uid="uid://dhdt7tt00v316" path="res://player/model/ganesh_dark_texture.png" id="1_tex"]
+
+[resource]
+resource_name = "M_Ganesh_Elephant_Dark"
+albedo_texture = ExtResource("1_tex")
+roughness = 0.4
