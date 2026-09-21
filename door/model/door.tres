@@ -1,9 +1,9 @@
 [gd_resource type="StandardMaterial3D" format=3 uid="uid://bjy37rys7arg0"]
 
-[ext_resource type="Texture2D" uid="uid://c0gly8oy0hsbg" path="res://door/textures/door_orm.png" id="1"]
-[ext_resource type="Texture2D" uid="uid://cgimqwcsyb6eu" path="res://door/textures/door_emission.png" id="2"]
-[ext_resource type="Texture2D" uid="uid://bstx1dlfh05i1" path="res://door/textures/door_normal.png" id="3"]
-[ext_resource type="Texture2D" uid="uid://bhtkq1wnlj0gm" path="res://door/textures/door_albedo.png" id="4"]
+[ext_resource type="Texture2D" uid="uid://crmon0kumdi2t" path="res://level/textures/props/door_orm.png" id="1"]
+[ext_resource type="Texture2D" uid="uid://d14y7pucpqfdu" path="res://level/textures/props/door_emission.png" id="2"]
+[ext_resource type="Texture2D" uid="uid://c0s2chpxfbfva" path="res://level/textures/props/door_normal.png" id="3"]
+[ext_resource type="Texture2D" uid="uid://u78tlsd511gf" path="res://level/textures/props/door_albedo.png" id="4"]
 
 [resource]
 resource_name = "door"
