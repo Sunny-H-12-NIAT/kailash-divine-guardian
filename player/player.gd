@@ -9,13 +9,33 @@ enum Animations {
 	WALK,
 }
 
+# --- Configurable Movement Parameters ---
+## How quickly the input motion vector is interpolated (responsiveness).
 const MOTION_INTERPOLATE_SPEED: float = 10.0
-const ROTATION_INTERPOLATE_SPEED: float = 10.0
+## How quickly the character rotates to face the movement direction.
+const TURN_SPEED: float = 10.0
 
+## Minimum time considered airborne before landing logic triggers.
 const MIN_AIRBORNE_TIME: float = 0.1
+## Vertical impulse applied when jumping.
 const JUMP_SPEED: float = 6.0
+
+## Base walking speed (units/sec).
 const WALK_SPEED: float = 6.0
+## Running speed — used when input magnitude is high (units/sec).
+const RUN_SPEED: float = 9.0
+## Strafe speed when aiming (units/sec).
 const STRAFE_SPEED: float = 4.5
+
+## How quickly horizontal velocity ramps up toward the target (units/sec²).
+const ACCELERATION: float = 35.0
+## How quickly horizontal velocity ramps down when input stops (units/sec²).
+const DECELERATION: float = 25.0
+
+## Input magnitude threshold: below this, character is considered idle.
+const IDLE_THRESHOLD: float = 0.05
+## Input magnitude threshold: above this, character runs instead of walks.
+const RUN_THRESHOLD: float = 0.6
 
 var airborne_time: float = 100.0
 
@@ -74,26 +94,27 @@ func _ready() -> void:
 	_setup_natural_arm_animations()
 
 	# Immediately play natural standing idle pose on game start so Ganesha is never in T-pose
-	if anim_player:
-		if anim_player.has_animation(&"Idle_Standing"):
-			anim_player.play(&"Idle_Standing")
-		elif anim_player.has_animation(&"Idle"):
-			anim_player.play(&"Idle")
+	_play_idle_animation()
 
 	if multiplayer.has_multiplayer_peer() and not multiplayer.is_server():
 		set_process(false)
 
 
+## Refined arm pose fix — uses gentler rotation angles to avoid over-correction.
+## Only modifies UpperArm bones so hands/forearms animate naturally.
 func _setup_natural_arm_animations() -> void:
 	if anim_player == null:
 		return
-	var q_down_l = Quaternion(Vector3(0, 0, 1), -0.55)
-	var q_down_r = Quaternion(Vector3(0, 0, 1), 0.55)
+	# Gentler rotation: 0.4 rad (~23°) instead of 0.55 rad (~31°)
+	# This brings arms down from T-pose without forcing them unnaturally tight
+	var q_down_l = Quaternion(Vector3(0, 0, 1), -0.4)
+	var q_down_r = Quaternion(Vector3(0, 0, 1), 0.4)
 	for anim_name in anim_player.get_animation_list():
 		var anim = anim_player.get_animation(anim_name)
 		if anim == null:
 			continue
 		var s_name = str(anim_name).to_lower()
+		# Skip attack animations so casting/striking arm poses are preserved
 		var is_attack = "trident" in s_name or "strike" in s_name or "bless" in s_name
 		for t in range(anim.get_track_count()):
 			var path = str(anim.track_get_path(t))
@@ -110,11 +131,29 @@ func _setup_natural_arm_animations() -> void:
 						anim.track_set_key_value(t, k, q_down_r * val)
 
 
+## Helper to play the best available idle animation. Used as a T-pose safety net.
+func _play_idle_animation() -> void:
+	if anim_player == null:
+		return
+	if anim_player.has_animation(&"Idle_Standing"):
+		anim_player.play(&"Idle_Standing")
+	elif anim_player.has_animation(&"Idle"):
+		anim_player.play(&"Idle")
+	elif anim_player.has_animation(&"Guard_Stance"):
+		anim_player.play(&"Guard_Stance")
+	anim_player.speed_scale = 1.0
+
+
 func _physics_process(delta: float) -> void:
 	if not multiplayer.has_multiplayer_peer() or multiplayer.is_server():
 		apply_input(delta)
 	else:
 		animate(current_animation, delta)
+
+	# T-pose safety net: if AnimationPlayer has stopped or has no animation,
+	# force idle so the bind pose is never visible during gameplay.
+	if anim_player and not anim_player.is_playing():
+		_play_idle_animation()
 
 
 func animate(anim: int, delta: float) -> void:
@@ -145,11 +184,12 @@ func animate(anim: int, delta: float) -> void:
 
 	# Priority 3: Aiming / Strafing
 	if anim == Animations.STRAFE:
-		if motion.length() > 0.05:
+		if motion.length() > IDLE_THRESHOLD:
 			var move_anim: StringName = &"Walk_Crawl" if anim_player.has_animation(&"Walk_Crawl") else &"Race_Depart"
 			if anim_player.current_animation != move_anim:
 				anim_player.play(move_anim, 0.2)
-			anim_player.speed_scale = clampf(motion.length(), 0.8, 1.2)
+			# Scale playback to strafe speed so feet don't slide
+			anim_player.speed_scale = clampf(motion.length() * 1.0, 0.7, 1.2)
 		elif anim_player.has_animation(&"Guard_Stance"):
 			if anim_player.current_animation != &"Guard_Stance":
 				anim_player.play(&"Guard_Stance", 0.2)
@@ -160,21 +200,28 @@ func animate(anim: int, delta: float) -> void:
 			anim_player.speed_scale = 1.0
 		return
 
-	# Priority 4: Standard Locomotion (Walk/Run/Idle)
-	if motion.length() > 0.75:
-		# Sprint / Fast Run
+	# Priority 4: Standard Locomotion — speed-based state selection
+	var motion_mag: float = motion.length()
+
+	if motion_mag > RUN_THRESHOLD:
+		# Run — fast locomotion
 		var run_anim: StringName = &"Race_Depart" if anim_player.has_animation(&"Race_Depart") else &"Walk_Crawl"
 		if anim_player.current_animation != run_anim:
 			anim_player.play(run_anim, 0.2)
-		anim_player.speed_scale = clampf(motion.length() * 1.1, 0.9, 1.4)
-	elif motion.length() > 0.05:
-		# Natural Walk Cycle
+		# Scale playback rate: at full input (1.0) → ~1.3x, at threshold → ~0.9x
+		anim_player.speed_scale = clampf(motion_mag * 1.3, 0.9, 1.5)
+
+	elif motion_mag > IDLE_THRESHOLD:
+		# Walk — moderate locomotion
 		var walk_anim: StringName = &"Walk_Crawl" if anim_player.has_animation(&"Walk_Crawl") else &"Race_Depart"
 		if anim_player.current_animation != walk_anim:
 			anim_player.play(walk_anim, 0.2)
-		anim_player.speed_scale = clampf(motion.length() * 1.2, 0.8, 1.25)
+		# Scale playback rate: map [IDLE_THRESHOLD..RUN_THRESHOLD] → [0.6..1.1]
+		var walk_factor: float = (motion_mag - IDLE_THRESHOLD) / (RUN_THRESHOLD - IDLE_THRESHOLD)
+		anim_player.speed_scale = clampf(0.6 + walk_factor * 0.5, 0.6, 1.1)
+
 	else:
-		# Natural Idle Standing with Breathing
+		# Idle — no meaningful input
 		var idle_anim: StringName = &"Idle_Standing" if anim_player.has_animation(&"Idle_Standing") else &"Idle"
 		if anim_player.current_animation != idle_anim:
 			anim_player.play(idle_anim, 0.25)
@@ -185,8 +232,10 @@ func apply_input(delta: float) -> void:
 	if attack_timer > 0.0:
 		attack_timer -= delta
 
+	# Smoothly interpolate the input motion vector for responsive but non-jerky feel
 	motion = motion.lerp(player_input.motion, MOTION_INTERPOLATE_SPEED * delta)
 
+	# Build camera-relative horizontal basis (ignoring pitch)
 	var camera_basis: Basis = player_input.get_camera_rotation_basis()
 	var camera_z: Vector3 = camera_basis.z
 	var camera_x: Vector3 = camera_basis.x
@@ -224,24 +273,47 @@ func apply_input(delta: float) -> void:
 			animate(Animations.JUMP_UP, delta)
 		else:
 			animate(Animations.JUMP_DOWN, delta)
-		target_vel = (camera_x * motion.x + camera_z * motion.y) * WALK_SPEED
+		# Air movement: full walk speed, less acceleration
+		var air_dir: Vector3 = camera_x * motion.x + camera_z * motion.y
+		if air_dir.length() > 1.0:
+			air_dir = air_dir.normalized()
+		target_vel = air_dir * WALK_SPEED
 
 	elif player_input.aiming:
-		# Rotate towards camera direction while aiming.
+		# Rotate towards camera direction while aiming (strafe behavior).
 		var q_from: Quaternion = orientation.basis.get_rotation_quaternion()
 		var q_to: Quaternion = player_input.get_camera_base_quaternion()
-		orientation.basis = Basis(q_from.slerp(q_to, delta * ROTATION_INTERPOLATE_SPEED))
+		orientation.basis = Basis(q_from.slerp(q_to, delta * TURN_SPEED))
 
 		animate(Animations.STRAFE, delta)
-		target_vel = (camera_x * motion.x + camera_z * motion.y) * STRAFE_SPEED
+		var strafe_dir: Vector3 = camera_x * motion.x + camera_z * motion.y
+		if strafe_dir.length() > 1.0:
+			strafe_dir = strafe_dir.normalized()
+		target_vel = strafe_dir * STRAFE_SPEED
 
-	else: # Walking / Idle
+	else: # Walking / Running / Idle
 		var target_dir: Vector3 = camera_x * motion.x + camera_z * motion.y
+
+		# Normalize diagonal movement so it doesn't exceed intended speed
+		if target_dir.length() > 1.0:
+			target_dir = target_dir.normalized()
+
 		if target_dir.length() > 0.001:
+			# Smooth rotation toward movement direction
 			var q_from: Quaternion = orientation.basis.get_rotation_quaternion()
 			var q_to: Quaternion = Basis.looking_at(target_dir).get_rotation_quaternion()
-			orientation.basis = Basis(q_from.slerp(q_to, delta * ROTATION_INTERPOLATE_SPEED))
-			target_vel = target_dir * WALK_SPEED
+			orientation.basis = Basis(q_from.slerp(q_to, delta * TURN_SPEED))
+
+			# Speed selection: walk at low input, run at high input
+			var input_mag: float = motion.length()
+			var target_speed: float
+			if input_mag > RUN_THRESHOLD:
+				# Blend between WALK_SPEED and RUN_SPEED based on input magnitude
+				var run_factor: float = (input_mag - RUN_THRESHOLD) / (1.0 - RUN_THRESHOLD)
+				target_speed = lerpf(WALK_SPEED, RUN_SPEED, clampf(run_factor, 0.0, 1.0))
+			else:
+				target_speed = WALK_SPEED
+			target_vel = target_dir * target_speed
 
 		animate(Animations.WALK, delta)
 
@@ -249,9 +321,17 @@ func apply_input(delta: float) -> void:
 	if player_input.shooting and fire_cooldown.time_left == 0:
 		_perform_divine_attack(delta)
 
-	# Smooth horizontal velocity
-	velocity.x = move_toward(velocity.x, target_vel.x, 25.0 * delta)
-	velocity.z = move_toward(velocity.z, target_vel.z, 25.0 * delta)
+	# Smooth horizontal velocity with proper acceleration / deceleration
+	var accel: float
+	if target_vel.length_squared() > 0.01:
+		# Accelerating toward target
+		accel = ACCELERATION
+	else:
+		# Decelerating to stop
+		accel = DECELERATION
+
+	velocity.x = move_toward(velocity.x, target_vel.x, accel * delta)
+	velocity.z = move_toward(velocity.z, target_vel.z, accel * delta)
 	velocity += get_gravity() * delta
 
 	set_velocity(velocity)
@@ -281,7 +361,7 @@ func _perform_divine_attack(delta: float) -> void:
 	if aim_dir_flat.length() > 0.01:
 		var q_from: Quaternion = orientation.basis.get_rotation_quaternion()
 		var q_to: Quaternion = Basis.looking_at(aim_dir_flat).get_rotation_quaternion()
-		orientation.basis = Basis(q_from.slerp(q_to, delta * ROTATION_INTERPOLATE_SPEED * 3.0))
+		orientation.basis = Basis(q_from.slerp(q_to, delta * TURN_SPEED * 3.0))
 
 	# Launch visible divine energy projectile
 	var bullet: CharacterBody3D = preload("res://player/bullet/bullet.tscn").instantiate()
@@ -337,4 +417,3 @@ func hit() -> void:
 func add_camera_shake_trauma(amount: float) -> void:
 	if player_input and player_input.camera_camera:
 		player_input.camera_camera.add_trauma(amount)
-
